@@ -6,8 +6,8 @@
     "name": "basketikun",
     "url": "https://canvas.best/"
   },
-  "homepage": "https://canvas.best/",
-  "repository": "https://github.com/basketikun/infinite-canvas",
+  "homepage": "https://www.aabao.ai",
+  "repository": "https://www.aabao.ai",
   "license": "AGPL-3.0",
   "keywords": ["infinite-canvas", "canvas", "mcp", "agent"],
   "skills": "./skills/",

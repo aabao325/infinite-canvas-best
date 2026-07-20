@@ -1,8 +1,7 @@
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
-import { appName, gitConfig } from './shared';
-import { ArrowUpRight } from 'lucide-react';
+import { appName, homeUrl } from './shared';
+import { ArrowUpRight, Globe } from 'lucide-react';
 
-const githubUrl = `https://github.com/${gitConfig.user}/${gitConfig.repo}`;
 const qqUrl = 'https://qm.qq.com/q/DFnKzZ807u';
 
 export function baseOptions(): BaseLayoutProps {
@@ -34,12 +33,12 @@ export function baseOptions(): BaseLayoutProps {
       },
       {
         type: 'icon',
-        text: 'GitHub',
-        label: 'GitHub',
-        url: githubUrl,
+        text: '官网',
+        label: '官网',
+        url: homeUrl,
         external: true,
         on: 'menu',
-        icon: <img src="/github.svg" alt="" className="size-4" />,
+        icon: <Globe className="size-4" />,
       },
       {
         type: 'icon',
