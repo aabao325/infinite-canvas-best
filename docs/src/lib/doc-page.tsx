@@ -7,6 +7,7 @@ import {
   MarkdownCopyButton,
   ViewOptionsPopover,
 } from 'fumadocs-ui/layouts/docs/page';
+import { localizePath } from './i18n';
 
 export type DocPageData = (typeof source)['$inferPage'];
 
@@ -34,8 +35,16 @@ export function DocPageContent({ page }: { page: DocPageData }) {
 }
 
 export function getDocPageMetadata(page: DocPageData): Metadata {
+  const path = `/docs/${page.slugs.join('/')}`;
+
   return {
     title: page.data.title,
     description: page.data.description,
+    alternates: {
+      languages: {
+        en: localizePath('en', path),
+        'zh-CN': localizePath('zh-CN', path),
+      },
+    },
   };
 }
