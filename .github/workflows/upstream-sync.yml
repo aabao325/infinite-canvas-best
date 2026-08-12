@@ -1,0 +1,344 @@
+name: Upstream sync
+
+# 自动跟随上游 basketikun/infinite-canvas：
+#   检测新提交 → 合并到同步分支 → CI 验证 → 全绿才落地 main → 打 tag → 出 ghcr 镜像
+# 有冲突或 CI 失败都不会碰 main，只留一个 PR 等人处理。
+on:
+  schedule:
+    # 每天 02:37（北京时间）。避开整点，减少与全网定时任务撞车。
+    - cron: "37 18 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只检测并验证，不落地 main（排查用）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/basketikun/infinite-canvas.git
+
+jobs:
+  detect:
+    name: 检测并合并上游
+    runs-on: ubuntu-latest
+    outputs:
+      has_update: ${{ steps.check.outputs.has_update }}
+      conflicted: ${{ steps.merge.outputs.conflicted }}
+      branch: ${{ steps.check.outputs.branch }}
+      upstream_version: ${{ steps.check.outputs.upstream_version }}
+      commit_count: ${{ steps.check.outputs.commit_count }}
+      touches_workflows: ${{ steps.check.outputs.touches_workflows }}
+      blocked: ${{ steps.merge.outputs.blocked }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # 配了 SYNC_PAT 就用它：GITHUB_TOKEN 推不了含 .github/workflows/ 改动的提交。
+          # 没配也能跑，只是遇到上游改 CI 时会转人工（见下面的 touches_workflows 检测）。
+          token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: 配置 git 身份
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: 拉取上游
+        run: |
+          git remote add upstream "$UPSTREAM" 2>/dev/null || git remote set-url upstream "$UPSTREAM"
+          git fetch upstream --tags --prune
+
+      - name: 检查是否有新提交
+        id: check
+        run: |
+          count=$(git rev-list --count HEAD..upstream/main)
+          echo "commit_count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -eq 0 ]; then
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "已是最新，无需同步。"
+            exit 0
+          fi
+          echo "has_update=true" >> "$GITHUB_OUTPUT"
+          # 上游 VERSION 作为版本标识；缺失就退回短 sha
+          version=$(git show upstream/main:VERSION 2>/dev/null | tr -d '[:space:]' || true)
+          [ -n "$version" ] || version="sha-$(git rev-parse --short upstream/main)"
+          echo "upstream_version=$version" >> "$GITHUB_OUTPUT"
+          echo "branch=sync/upstream-${version}-$(date +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+          echo "上游有 $count 个新提交，版本 $version"
+
+          # GITHUB_TOKEN 是 App token，推不了含 .github/workflows/ 改动的提交，连指向这种
+          # 提交的 tag 也推不了。上游确实会动 CI（历史上 11 次），所以先探明：
+          # 涉及了就转人工，避免 push 到一半失败留下半成品状态。配了 SYNC_PAT 则不受限。
+          if git diff --name-only HEAD...upstream/main | grep -q '^\.github/workflows/'; then
+            echo "touches_workflows=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::上游改动涉及 .github/workflows/，未配置 SYNC_PAT 时无法自动落地"
+          else
+            echo "touches_workflows=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 合并上游到同步分支
+        id: merge
+        if: steps.check.outputs.has_update == 'true'
+        env:
+          # secrets 不能用在 if 条件里，只能拿到 shell 里判断
+          HAS_PAT: ${{ secrets.SYNC_PAT != '' }}
+          TOUCHES_WORKFLOWS: ${{ steps.check.outputs.touches_workflows }}
+        run: |
+          if [ "$TOUCHES_WORKFLOWS" = "true" ] && [ "$HAS_PAT" != "true" ]; then
+            # 推送会被 GitHub 拒绝，连分支都建不起来，索引开 issue 通知比留半成品好
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+            echo "上游本次改动了 .github/workflows/，GITHUB_TOKEN 无权推送，跳过自动同步。"
+            exit 0
+          fi
+          echo "blocked=false" >> "$GITHUB_OUTPUT"
+          git switch -c "${{ steps.check.outputs.branch }}"
+          if git merge --no-ff upstream/main -m "Merge upstream ${{ steps.check.outputs.upstream_version }} into main"; then
+            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+            echo "合并干净。"
+          else
+            # 保留冲突现场：提交带冲突标记的内容，让人能在 PR 里直接看到冲突位置
+            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+            git add -A
+            git commit -m "冲突：上游 ${{ steps.check.outputs.upstream_version }} 需手动解决" --no-verify
+            echo "存在冲突，已保留冲突标记待人工处理。"
+          fi
+          git push origin "${{ steps.check.outputs.branch }}"
+
+      - name: 汇总本次上游改动
+        if: steps.check.outputs.has_update == 'true'
+        run: |
+          {
+            echo "### 上游 ${{ steps.check.outputs.upstream_version }}（${{ steps.check.outputs.commit_count }} 个新提交）"
+            echo
+            if [ "${{ steps.merge.outputs.blocked }}" = "true" ]; then
+              echo "**未自动同步**：上游改动涉及 \`.github/workflows/\`，需配置 \`SYNC_PAT\` 或本地手动合并。"
+            else
+              echo "冲突：${{ steps.merge.outputs.conflicted }}"
+            fi
+            echo
+            echo '```'
+            # blocked 时没产生合并提交，只能直接比对 upstream；否则 HEAD 是合并提交，
+            # ^1 是我方 main、^2 是 upstream/main，取差集才是上游带来的提交
+            if [ "${{ steps.merge.outputs.blocked }}" = "true" ]; then
+              git log --oneline --no-decorate HEAD..upstream/main | head -40
+            else
+              git log --oneline --no-decorate HEAD^1..HEAD^2 | head -40
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: CI 验证同步分支
+    needs: detect
+    # 带冲突标记的代码必然编译失败，没必要浪费一轮 CI；blocked 时分支根本没建起来
+    if: |
+      needs.detect.outputs.has_update == 'true' &&
+      needs.detect.outputs.conflicted == 'false' &&
+      needs.detect.outputs.blocked == 'false'
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.detect.outputs.branch }}
+
+  land:
+    name: 落地 main 并出镜像
+    needs: [detect, verify]
+    if: |
+      needs.detect.outputs.has_update == 'true' &&
+      needs.detect.outputs.conflicted == 'false' &&
+      needs.detect.outputs.blocked == 'false' &&
+      needs.verify.result == 'success' &&
+      inputs.dry_run != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # 打 tag 也受 workflow 文件限制，同样优先用 PAT
+          token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: 配置 git 身份
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: 开 PR 留档
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ needs.detect.outputs.branch }}
+          VERSION: ${{ needs.detect.outputs.upstream_version }}
+          COUNT: ${{ needs.detect.outputs.commit_count }}
+        run: |
+          cat > /tmp/pr-body.md <<EOF
+          自动同步上游 ${COUNT} 个新提交，CI 已全绿。
+
+          - 上游版本：\`${VERSION}\`
+          - 同步分支：\`${BRANCH}\`
+          - 验证：typecheck + build + agent test + docker build 均通过
+
+          由 upstream-sync 自动创建并合并，留作变更记录。
+          EOF
+          url=$(gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Merge upstream ${VERSION} into main" \
+            --body-file /tmp/pr-body.md)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "已开 PR：$url"
+
+      - name: 合并到 main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge "${{ steps.pr.outputs.url }}" --merge --delete-branch
+          echo "已合并到 main。"
+
+      - name: 打 tag
+        id: tag
+        env:
+          VERSION: ${{ needs.detect.outputs.upstream_version }}
+        run: |
+          # 合并已发生在远端，这里把本地 main 直接对齐 origin/main
+          git fetch origin main --tags
+          git checkout -B main origin/main
+          base="${VERSION}-best"
+          tag="$base"
+          # 上游可能不改 VERSION 就推新提交，重名时追加序号
+          n=2
+          while git rev-parse -q --verify "refs/tags/$tag" >/dev/null; do
+            tag="${base}.${n}"
+            n=$((n + 1))
+          done
+          git tag -a "$tag" -m "Sync upstream ${VERSION}"
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "已打 tag：$tag"
+
+      - name: 触发镜像构建
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # GITHUB_TOKEN 推的 tag 不会自动触发 workflow（防循环），
+          # 但 workflow_dispatch 始终能触发，所以这里显式调用。
+          # --ref 决定检出哪份代码，-f tag 决定镜像标签名（缺了它镜像只有 sha 标签）。
+          gh workflow run docker-image.yml \
+            --ref "${{ steps.tag.outputs.tag }}" \
+            -f tag="${{ steps.tag.outputs.tag }}"
+          echo "已触发 docker-image.yml @ ${{ steps.tag.outputs.tag }}"
+
+      - name: 汇总
+        run: |
+          {
+            echo "### 已落地 main"
+            echo
+            echo "- PR：${{ steps.pr.outputs.url }}"
+            echo "- tag：\`${{ steps.tag.outputs.tag }}\`"
+            echo "- 镜像：\`ghcr.io/${{ github.repository_owner }}/infinite-canvas:${{ steps.tag.outputs.tag }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # 上游改了 .github/workflows/ 且没配 SYNC_PAT：分支推不上去，只能开 issue 提醒
+  blocked:
+    name: 受 workflow 权限阻塞
+    needs: detect
+    if: needs.detect.outputs.blocked == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: 开 issue 说明处理方式
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.detect.outputs.upstream_version }}
+          COUNT: ${{ needs.detect.outputs.commit_count }}
+        run: |
+          title="[需处理] 上游 ${VERSION} 改动了 CI 配置，无法自动同步"
+          # 已有同名未关闭 issue 就不再重复开
+          if gh issue list --repo "$REPO" --state open --search "$title in:title" --json number \
+             --jq 'length' | grep -qv '^0$'; then
+            echo "已存在同名 issue，跳过。"
+            exit 0
+          fi
+          # 正文用 heredoc 写文件：YAML 块标量会统一去掉这层缩进，shell 收到的是顶格 markdown。
+          # 直接在 --body 里换行顶格会冲破块标量边界，导致 workflow 解析失败。
+          cat > /tmp/blocked-body.md <<EOF
+          上游 \`${VERSION}\`（${COUNT} 个新提交）的改动涉及 \`.github/workflows/\`。
+
+          GitHub 不允许 Actions 内置的 \`GITHUB_TOKEN\` 推送包含 workflow 文件改动的提交或 tag，因此本次自动同步已跳过，**main 未被改动**。
+
+          两种处理方式：
+
+          **一次性手动合并**
+
+          \`\`\`bash
+          git fetch upstream --tags
+          git merge upstream/main
+          # 验证后
+          git push origin main
+          \`\`\`
+
+          **永久解决**：建一个有 \`repo\` + \`workflow\` 权限的 PAT，存为仓库 secret \`SYNC_PAT\`，之后这类同步就能全自动完成。
+          EOF
+          gh issue create --repo "$REPO" --title "$title" --body-file /tmp/blocked-body.md
+          echo "已开 issue。"
+
+  notify:
+    name: 需要人工处理
+    needs: [detect, verify]
+    # 冲突、或 CI 没过：main 保持不动，开 PR 等人处理
+    if: |
+      always() &&
+      needs.detect.outputs.has_update == 'true' &&
+      needs.detect.outputs.blocked == 'false' &&
+      (needs.detect.outputs.conflicted == 'true' || needs.verify.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 开 PR 并标记原因
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ needs.detect.outputs.branch }}
+          VERSION: ${{ needs.detect.outputs.upstream_version }}
+          COUNT: ${{ needs.detect.outputs.commit_count }}
+          CONFLICTED: ${{ needs.detect.outputs.conflicted }}
+        run: |
+          if [ "$CONFLICTED" = "true" ]; then
+            reason="合并存在冲突，分支里保留了冲突标记，需要本地解决。"
+            label="upstream-conflict"
+          else
+            reason="合并干净但 CI 未通过，可能是语义冲突（上游改动与本地定制在逻辑上不兼容）。"
+            label="upstream-ci-failed"
+          fi
+          cat > /tmp/notify-body.md <<EOF
+          ${reason}
+
+          - 上游版本：\`${VERSION}\`（${COUNT} 个新提交）
+          - 同步分支：\`${BRANCH}\`
+          - main 未被改动
+
+          本地处理：
+
+          \`\`\`bash
+          git fetch origin
+          git switch ${BRANCH}
+          # 解决问题后
+          git push origin ${BRANCH}
+          \`\`\`
+          EOF
+          gh label create "$label" --color D93F0B --force >/dev/null 2>&1 || true
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "[需处理] 上游 ${VERSION} 同步未自动落地" \
+            --label "$label" \
+            --body-file /tmp/notify-body.md || echo "PR 可能已存在，跳过。"

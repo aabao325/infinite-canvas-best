@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "镜像 tag（留空则按当前 ref 推断）"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -23,8 +28,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          # workflow_dispatch 时事件不是 tag push，type=ref 算不出来，靠 inputs.tag 显式指定
           tags: |
             type=ref,event=tag
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
             type=sha,prefix=
 
   build:
