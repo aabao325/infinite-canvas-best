@@ -116,6 +116,23 @@ const IMAGE_MAX_EDGE = 3840;
 const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
 
+/** Per-model pixel-area window. Ark Seedream 5.0 rejects sizes outside its own much narrower range. */
+type ImageSizeLimits = { minPixels: number; maxPixels: number; maxEdge: number };
+
+const DEFAULT_IMAGE_SIZE_LIMITS: ImageSizeLimits = { minPixels: IMAGE_MIN_PIXELS, maxPixels: IMAGE_MAX_PIXELS, maxEdge: IMAGE_MAX_EDGE };
+/** Seedream 5.0 accepts roughly 1920x1920 up to 2048x2048x1.1025; anything outside fails with a `size` 400. */
+const SEEDREAM_5_SIZE_LIMITS: ImageSizeLimits = { minPixels: 3686400, maxPixels: 4624220, maxEdge: IMAGE_MAX_EDGE };
+
+/** Seedream 5.x drops the `quality`/`background` knobs and needs its own size window. */
+function isSeedream5Model(model: string) {
+    const value = model.trim().toLowerCase().replace(/[._]/g, "-");
+    return value.includes("seedream-5");
+}
+
+function imageSizeLimits(model: string): ImageSizeLimits {
+    return isSeedream5Model(model) ? SEEDREAM_5_SIZE_LIMITS : DEFAULT_IMAGE_SIZE_LIMITS;
+}
+
 const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
 const GEMINI_IMAGE_SIZE_BY_QUALITY: Record<string, string> = { low: "1K", medium: "2K", high: "4K", standard: "1K", hd: "2K" };
 
@@ -131,7 +148,7 @@ function normalizeBackground(background: string | undefined) {
 }
 
 /** Map "quality + ratio" to an explicit pixel dimension like "3840x2160". */
-function resolveSize(quality: string | undefined, ratio: string): string {
+function resolveSize(quality: string | undefined, ratio: string, limits = DEFAULT_IMAGE_SIZE_LIMITS): string {
     const parsedRatio = parseImageRatio(ratio);
     const basePixels = quality ? QUALITY_BASE[quality] : undefined;
     const isLandscape = parsedRatio.width >= parsedRatio.height;
@@ -149,10 +166,39 @@ function resolveSize(quality: string | undefined, ratio: string): string {
         longSide = Math.round((shortSide * longRatio) / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP;
     }
 
-    const width = isLandscape ? longSide : shortSide;
-    const height = isLandscape ? shortSide : longSide;
-    validateImageSize(width, height);
-    return `${width}x${height}`;
+    const scaled = fitPixelWindow(isLandscape ? longSide : shortSide, isLandscape ? shortSide : longSide, limits);
+    validateImageSize(scaled.width, scaled.height, limits);
+    return `${scaled.width}x${scaled.height}`;
+}
+
+/**
+ * Scale a ratio-derived size into the model's pixel window, keeping the aspect ratio.
+ * Quality tiers are model-agnostic, so "1K" on Seedream 5.0 would otherwise land below its floor.
+ */
+function fitPixelWindow(width: number, height: number, limits: ImageSizeLimits) {
+    const snap = (side: number) => Math.max(IMAGE_SIZE_STEP, Math.round(side / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP);
+    const pixels = width * height;
+    if (pixels >= limits.minPixels && pixels <= limits.maxPixels) {
+        // Already in range, but an arbitrary source size still has to land on the 16px grid.
+        const snapped = { width: snap(width), height: snap(height) };
+        const snappedPixels = snapped.width * snapped.height;
+        if (snappedPixels >= limits.minPixels && snappedPixels <= limits.maxPixels) return snapped;
+    }
+    const target = pixels < limits.minPixels ? limits.minPixels : limits.maxPixels;
+    const factor = Math.sqrt(target / pixels);
+    const round = pixels < limits.minPixels ? Math.ceil : Math.floor;
+    const scale = (side: number) => Math.max(IMAGE_SIZE_STEP, round((side * factor) / IMAGE_SIZE_STEP) * IMAGE_SIZE_STEP);
+    let next = { width: scale(width), height: scale(height) };
+    // Rounding to the 16px step can push the area back outside the window; nudge the long edge until it fits.
+    for (let attempt = 0; attempt < 8 && next.width * next.height > limits.maxPixels; attempt += 1) {
+        const landscape = next.width >= next.height;
+        next = landscape ? { ...next, width: next.width - IMAGE_SIZE_STEP } : { ...next, height: next.height - IMAGE_SIZE_STEP };
+    }
+    for (let attempt = 0; attempt < 8 && next.width * next.height < limits.minPixels; attempt += 1) {
+        const landscape = next.width >= next.height;
+        next = landscape ? { ...next, width: next.width + IMAGE_SIZE_STEP } : { ...next, height: next.height + IMAGE_SIZE_STEP };
+    }
+    return next;
 }
 
 function parseRatioValue(value: string) {
@@ -176,24 +222,26 @@ function parseImageDimensions(value: string) {
     return { width: Number(match[1]), height: Number(match[2]) };
 }
 
-function validateImageSize(width: number, height: number) {
+function validateImageSize(width: number, height: number, limits = DEFAULT_IMAGE_SIZE_LIMITS) {
     if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw new Error(apiText("positiveImageDimensions"));
     if (width % IMAGE_SIZE_STEP !== 0 || height % IMAGE_SIZE_STEP !== 0) throw new Error(apiText("imageDimensionStep"));
-    if (Math.max(width, height) > IMAGE_MAX_EDGE) throw new Error(apiText("imageEdgeLimit"));
+    if (Math.max(width, height) > limits.maxEdge) throw new Error(apiText("imageEdgeLimit", { max: limits.maxEdge }));
     if (Math.max(width, height) / Math.min(width, height) > IMAGE_MAX_RATIO) throw new Error(apiText("imageRatioLimit"));
     const pixels = width * height;
-    if (pixels < IMAGE_MIN_PIXELS || pixels > IMAGE_MAX_PIXELS) throw new Error(apiText("imagePixelLimit"));
+    if (pixels < limits.minPixels || pixels > limits.maxPixels) throw new Error(apiText("imagePixelLimit", { min: limits.minPixels, max: limits.maxPixels }));
 }
 
-function resolveRequestSize(quality: string | undefined, size: string) {
+function resolveRequestSize(quality: string | undefined, size: string, limits = DEFAULT_IMAGE_SIZE_LIMITS) {
     const value = size.trim();
     if (!value || value.toLowerCase() === "auto") return undefined;
     const dimensions = parseImageDimensions(value);
     if (dimensions) {
-        validateImageSize(dimensions.width, dimensions.height);
-        return `${dimensions.width}x${dimensions.height}`;
+        // An explicit size the user typed is still clamped: the model would reject it outright otherwise.
+        const fitted = fitPixelWindow(dimensions.width, dimensions.height, limits);
+        validateImageSize(fitted.width, fitted.height, limits);
+        return `${fitted.width}x${fitted.height}`;
     }
-    if (value.includes(":")) return resolveSize(quality, value);
+    if (value.includes(":")) return resolveSize(quality, value, limits);
     throw new Error(apiText("invalidImageSizeFormat"));
 }
 
@@ -719,7 +767,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(quality, config.size);
+        const requestSize = resolveRequestSize(quality, config.size, imageSizeLimits(requestConfig.model));
         const background = normalizeBackground(config.background);
         try {
             const result = await runModelPlugin({
@@ -743,8 +791,9 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
     }
+    const seedream5 = isSeedream5Model(requestConfig.model);
     const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(quality, config.size);
+    const requestSize = resolveRequestSize(quality, config.size, imageSizeLimits(requestConfig.model));
     const background = normalizeBackground(config.background);
     try {
         const response = await axios.post<ImageApiResponse>(
@@ -753,9 +802,10 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 model: requestConfig.model,
                 prompt: withSystemPrompt(requestConfig, prompt),
                 n,
-                ...(quality ? { quality } : {}),
+                // Seedream 5.x has no quality/background knobs; sending them risks a 400.
+                ...(quality && !seedream5 ? { quality } : {}),
                 ...(requestSize ? { size: requestSize } : {}),
-                ...(background ? { background } : {}),
+                ...(background && !seedream5 ? { background } : {}),
                 response_format: "b64_json",
                 output_format: IMAGE_OUTPUT_FORMAT,
             },
@@ -771,6 +821,56 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     }
 }
 
+function loadHtmlImage(src: string) {
+    return new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.crossOrigin = "anonymous";
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error(apiText("maskCompositeFailed")));
+        image.src = src;
+    });
+}
+
+/**
+ * Ark exposes no `mask` field, so the edit region is burned into a copy of the source as a
+ * translucent magenta overlay and Seedream 5.x is told in the prompt to only repaint that area.
+ * The mask arrives OpenAI-style: opaque everywhere, alpha 0 over the region to edit.
+ */
+async function compositeMaskHint(source: ReferenceImage, mask: ReferenceImage) {
+    const [sourceImage, maskImage] = await Promise.all([loadHtmlImage(await imageToDataUrl(source)), loadHtmlImage(await imageToDataUrl(mask))]);
+    const width = sourceImage.naturalWidth || sourceImage.width;
+    const height = sourceImage.naturalHeight || sourceImage.height;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error(apiText("maskCompositeFailed"));
+    context.drawImage(sourceImage, 0, 0, width, height);
+
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.width = width;
+    maskCanvas.height = height;
+    const maskContext = maskCanvas.getContext("2d", { willReadFrequently: true });
+    if (!maskContext) throw new Error(apiText("maskCompositeFailed"));
+    maskContext.drawImage(maskImage, 0, 0, width, height);
+
+    const maskData = maskContext.getImageData(0, 0, width, height);
+    const overlay = maskContext.createImageData(width, height);
+    let marked = 0;
+    for (let index = 0; index < maskData.data.length; index += 4) {
+        if (maskData.data[index + 3] > 0) continue;
+        overlay.data[index] = 255;
+        overlay.data[index + 1] = 0;
+        overlay.data[index + 2] = 255;
+        overlay.data[index + 3] = 140;
+        marked += 1;
+    }
+    if (!marked) throw new Error(apiText("maskEmptyRegion"));
+    maskContext.putImageData(overlay, 0, 0);
+    context.drawImage(maskCanvas, 0, 0);
+    return { dataUrl: canvas.toDataURL("image/png"), width, height };
+}
+
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
@@ -778,7 +878,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(quality, config.size);
+        const requestSize = resolveRequestSize(quality, config.size, imageSizeLimits(requestConfig.model));
         const background = normalizeBackground(config.background);
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
@@ -806,24 +906,34 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     }
 
     if (requestConfig.apiFormat === "ark") {
-        if (mask) throw new Error(apiText("maskModelUnsupported"));
+        const seedream5 = isSeedream5Model(requestConfig.model);
+        // Ark has no `mask` field. Seedream 5.x can hit a marked region from the prompt; older Ark models cannot.
+        if (mask && !seedream5) throw new Error(apiText("maskModelUnsupported"));
+        if (mask && !references.length) throw new Error(apiText("maskModelUnsupported"));
+        const limits = imageSizeLimits(requestConfig.model);
         const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(quality, config.size);
         const background = normalizeBackground(config.background);
-        const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
+        const marked = mask ? await compositeMaskHint(references[0], mask) : undefined;
+        const refs = marked
+            ? [marked.dataUrl, ...(await Promise.all(references.slice(1).map((image) => imageToDataUrl(image))))]
+            : await Promise.all(references.map((image) => imageToDataUrl(image)));
+        // A masked edit must come back at the source's aspect ratio, or "leave the rest untouched" cannot hold.
+        const requestSize = marked ? resolveRequestSize(quality, `${marked.width}x${marked.height}`, limits) : resolveRequestSize(quality, config.size, limits);
+        const arkPrompt = mask ? `${apiText("maskRegionInstruction")}\n\n${requestPrompt}` : requestPrompt;
         try {
             const response = await axios.post<ImageApiResponse>(
                 aiApiUrl(requestConfig, "/images/generations"),
                 {
                     model: requestConfig.model,
-                    prompt: withSystemPrompt(requestConfig, requestPrompt),
+                    prompt: withSystemPrompt(requestConfig, arkPrompt),
                     n,
                     response_format: "b64_json",
                     output_format: IMAGE_OUTPUT_FORMAT,
                     image: refs,
-                    ...(quality ? { quality } : {}),
+                    // Seedream 5.x has no quality/background knobs; sending them risks a 400.
+                    ...(quality && !seedream5 ? { quality } : {}),
                     ...(requestSize ? { size: requestSize } : {}),
-                    ...(background ? { background } : {}),
+                    ...(background && !seedream5 ? { background } : {}),
                 },
                 {
                     headers: aiHeaders(requestConfig, "application/json"),
@@ -837,7 +947,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     }
 
     const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(quality, config.size);
+    const requestSize = resolveRequestSize(quality, config.size, imageSizeLimits(requestConfig.model));
     const background = normalizeBackground(config.background);
     const formData = new FormData();
     formData.set("model", requestConfig.model);
