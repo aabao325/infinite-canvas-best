@@ -8,6 +8,7 @@
 type RuntimeConfig = {
     ANALYTICS_GA4_ID?: string; // GA4 measurement ID (G-XXXX)
     ANALYTICS_BAIDU_ID?: string; // Baidu Analytics site ID
+    IMAGE_PROXY_URL?: string; // Optional proxy used only when a provider CDN blocks cross-origin reads
 };
 
 declare global {
@@ -27,3 +28,9 @@ function read(key: keyof RuntimeConfig, buildTime: string | undefined, fallback 
 
 export const ANALYTICS_GA4_ID = read("ANALYTICS_GA4_ID", import.meta.env.VITE_ANALYTICS_GA4_ID);
 export const ANALYTICS_BAIDU_ID = read("ANALYTICS_BAIDU_ID", import.meta.env.VITE_ANALYTICS_BAIDU_ID);
+
+// Optional same-origin image proxy. Some providers (for example Ark/Seedream) return signed CDN links
+// without CORS headers, so the browser can display them but cannot read their bytes for local persistence.
+// Left empty by default: generated images then fall back to link-only display. Point this at a proxy you
+// control to restore real downloads. `{url}` is replaced with the encoded target; without it, `?url=` is appended.
+export const IMAGE_PROXY_URL = read("IMAGE_PROXY_URL", import.meta.env.VITE_IMAGE_PROXY_URL);

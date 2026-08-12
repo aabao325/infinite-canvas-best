@@ -51,7 +51,40 @@ export function readImageMeta(dataUrl: string) {
     });
 }
 
+/**
+ * Measure a cross-origin image through an `<img>` tag. Display is not gated by CORS, so this works
+ * for provider CDN links whose bytes `fetch` cannot read. Rejects on a genuinely broken URL so a dead
+ * link still surfaces as a failure instead of becoming a placeholder-sized node.
+ */
+export function readRemoteImageMeta(url: string) {
+    return new Promise<{ width: number; height: number }>((resolve, reject) => {
+        const image = new Image();
+        const fail = () => {
+            clearTimeout(timer);
+            reject(new Error(i18n.t("common.imageReadFailed")));
+        };
+        image.onload = () => {
+            clearTimeout(timer);
+            if (!image.naturalWidth || !image.naturalHeight) return fail();
+            resolve({ width: image.naturalWidth, height: image.naturalHeight });
+        };
+        image.onerror = fail;
+        const timer = setTimeout(fail, 15000);
+        image.src = url;
+    });
+}
+
+/** Best-effort MIME type from a URL path; signed CDN links keep their extension ahead of the query string. */
+export function urlImageMimeType(url: string) {
+    const extension = url.split(/[?#]/, 1)[0].split(".").pop()?.toLowerCase() || "";
+    if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+    if (extension === "webp" || extension === "gif" || extension === "avif" || extension === "bmp") return `image/${extension}`;
+    return "image/png";
+}
+
 export function dataUrlToFile(image: ReferenceImage) {
+    // Splitting a plain link here would silently yield an empty file, so reject it outright.
+    if (!image.dataUrl.startsWith("data:")) throw new Error(i18n.t("apiErrors.remoteReferenceUnsupported"));
     const [header, content] = image.dataUrl.split(",", 2);
     const mimeType = header.match(/data:(.*?);base64/)?.[1] || image.type || "image/png";
     const binary = atob(content || "");

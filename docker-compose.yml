@@ -12,3 +12,6 @@ services:
     # environment:
     #   ANALYTICS_GA4_ID: G-XXXXXXXXXX                    # Google Analytics 4 衡量 ID
     #   ANALYTICS_BAIDU_ID: xxxxxxxxxxxxxxxxxxxxxxxxxxxx   # 百度统计站点 ID
+    #   # 图片代理（可选）。部分渠道返回的签名直链不带 CORS 头，读不到字节时默认降级为「保留远端链接展示」；
+    #   # 指向你自己控制的代理可恢复真正的下载与本地留存。务必在代理侧做目标域名白名单，避免变成 SSRF 转发器。
+    #   IMAGE_PROXY_URL: https://your-proxy.example.com/fetch?url={url}

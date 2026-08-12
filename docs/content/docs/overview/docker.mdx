@@ -60,3 +60,27 @@ services:
 ```
 
 SPA route changes automatically report page views to enabled providers. Only configure analytics IDs on sites you control, and do not commit them to the repository.
+
+## Optional image proxy
+
+Some image providers (for example Ark's Seedream) return **signed CDN links that carry no `Access-Control-Allow-Origin` header**. A browser can display such a link, but JavaScript cannot read its bytes, so the image cannot be stored locally.
+
+The default behaviour degrades gracefully: when the bytes are unreadable the **remote link is kept and displayed** instead of reporting a generation failure. The trade-off is that the image **dies with the signed link** (roughly 24 hours on Ark), is skipped by export archives, and cannot be inlined as a reference for providers that require uploaded bytes.
+
+To restore real downloads and local persistence, point the variable below at a proxy **you control**. Left empty, the fallback above applies and no third-party service is contacted.
+
+| Variable | Description |
+| --- | --- |
+| `IMAGE_PROXY_URL` | Same-origin image proxy. `{url}` is replaced with the encoded target; without it, `?url=` is appended |
+
+```yaml
+services:
+  app:
+    image: ghcr.io/basketikun/infinite-canvas:latest
+    ports:
+      - "3000:3000"
+    environment:
+      IMAGE_PROXY_URL: https://your-proxy.example.com/fetch?url={url}
+```
+
+The proxy is only called after a direct read fails. Enforce a **destination allowlist** on the proxy, or it becomes an open forwarder (SSRF).

@@ -86,6 +86,30 @@ docker run -d -p 3000:3000 \
 
 单页应用的路由切换会自动向所有已启用的统计上报 pageview。
 
+## 图片代理（可选）
+
+部分生图渠道（例如火山方舟的 Seedream）返回的是**签名 CDN 直链，且不带 `Access-Control-Allow-Origin` 响应头**。这类链接浏览器能正常显示，但 JS 读不到它的原始字节，因此无法存进本地库。
+
+默认行为已做降级：读不到字节时**保留远端链接直接展示**，不再报「生成失败」。代价是这张图**随签名链接过期而失效**（方舟通常 24 小时），且不能参与导出打包，也不能作为多模态渠道之外的参考图重新编辑。
+
+想恢复真正的下载与本地留存，把下面的变量指向**你自己控制的**代理即可。留空则维持上面的降级展示，不会向任何第三方发请求。
+
+| 变量 | 说明 |
+| --- | --- |
+| `IMAGE_PROXY_URL` | 同源图片代理地址。含 `{url}` 时替换为编码后的目标地址；不含则自动追加 `?url=` |
+
+```yaml
+services:
+  app:
+    image: ghcr.io/basketikun/infinite-canvas:latest
+    ports:
+      - "3000:3000"
+    environment:
+      IMAGE_PROXY_URL: https://your-proxy.example.com/fetch?url={url}
+```
+
+代理只在直连读取失败后才会被调用。请务必在代理侧做**目标域名白名单**，否则它会变成任意地址的转发器（SSRF）。
+
 <Callout type="warn">
 请只在你自己的站点上配置统计 ID，不要把 ID 提交进仓库；fork 或自托管本项目的用户默认不会产生任何统计。
 </Callout>

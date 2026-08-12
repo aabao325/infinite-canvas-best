@@ -11,12 +11,20 @@ sanitize_id() {
     printf '%s' "$1" | tr -cd 'A-Za-z0-9-'
 }
 
+# A proxy URL needs the usual URL characters, so only strip quotes, backslashes, and whitespace,
+# which are the characters that could break out of the JavaScript string below.
+sanitize_url() {
+    printf '%s' "$1" | tr -d '"'"'"'\\ \t\r\n'
+}
+
 GA4_ID=$(sanitize_id "${ANALYTICS_GA4_ID:-}")
 BAIDU_ID=$(sanitize_id "${ANALYTICS_BAIDU_ID:-}")
+IMAGE_PROXY=$(sanitize_url "${IMAGE_PROXY_URL:-}")
 
 cat > /usr/share/nginx/html/config.js <<EOF
 window.__RUNTIME_CONFIG__ = {
   ANALYTICS_GA4_ID: "${GA4_ID}",
-  ANALYTICS_BAIDU_ID: "${BAIDU_ID}"
+  ANALYTICS_BAIDU_ID: "${BAIDU_ID}",
+  IMAGE_PROXY_URL: "${IMAGE_PROXY}"
 };
 EOF

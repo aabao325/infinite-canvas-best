@@ -2,7 +2,8 @@ import localforage from "localforage";
 
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
-import { readImageMeta } from "@/lib/image-utils";
+import { readImageMeta, readRemoteImageMeta, urlImageMimeType } from "@/lib/image-utils";
+import { fetchImageBlob, isRemoteHttpUrl } from "@/services/remote-image";
 
 export type UploadedImage = {
     url: string;
@@ -11,6 +12,8 @@ export type UploadedImage = {
     height: number;
     bytes: number;
     mimeType: string;
+    /** False when the bytes could not be read and only the remote link is held. Such images expire with the link. */
+    persisted?: boolean;
 };
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
@@ -19,13 +22,32 @@ const videoLogStore = localforage.createInstance({ name: "infinite-canvas", stor
 const objectUrls = new Map<string, string>();
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    if (typeof input === "string" && isRemoteHttpUrl(input)) {
+        try {
+            return await storeImageBlob(await fetchImageBlob(input));
+        } catch {
+            // Provider CDNs such as Ark's TOS omit `Access-Control-Allow-Origin`, so the bytes are
+            // unreadable here even though the browser can render the link. Keep the link so the result
+            // is shown instead of reported as a generation failure.
+            return linkOnlyImage(input);
+        }
+    }
+    return storeImageBlob(typeof input === "string" ? await (await fetch(input)).blob() : input);
+}
+
+async function storeImageBlob(blob: Blob): Promise<UploadedImage> {
     const storageKey = `image:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     const meta = await readImageMeta(url);
-    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
+    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType, persisted: true };
+}
+
+/** Hold only the remote link. An empty storage key makes the hydration path fall back to this URL. */
+async function linkOnlyImage(url: string): Promise<UploadedImage> {
+    const meta = await readRemoteImageMeta(url);
+    return { url, storageKey: "", width: meta.width, height: meta.height, bytes: 0, mimeType: urlImageMimeType(url), persisted: false };
 }
 
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
@@ -53,7 +75,14 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
     if (!url || url.startsWith("data:")) return url;
-    return blobToDataUrl(await (await fetch(url)).blob());
+    try {
+        return await blobToDataUrl(await fetchImageBlob(url));
+    } catch (error) {
+        // A link-only image cannot be inlined. Ark and Gemini accept a remote URL as a reference, so pass
+        // it through rather than failing; the multipart path rejects it explicitly in `dataUrlToFile`.
+        if (isRemoteHttpUrl(url)) return url;
+        throw error;
+    }
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {

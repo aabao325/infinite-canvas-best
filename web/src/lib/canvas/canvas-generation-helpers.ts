@@ -48,9 +48,10 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
             const content = node.metadata?.content;
             if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && node.metadata?.storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveMediaUrl(node.metadata.storageKey, content) } };
             if (node.type !== CanvasNodeType.Image || !content) return node;
-            const images = await Promise.all((node.metadata.images || []).map(async (image) => (image.content ? { ...image, content: await resolveImageUrl(image.storageKey, image.content) } : image)));
-            if (node.metadata?.storageKey) return { ...node, metadata: { ...node.metadata, content: await resolveImageUrl(node.metadata.storageKey, content), images } };
-            if (!content.startsWith("data:image/")) return node;
+            const images = await Promise.all((node.metadata?.images || []).map(async (image) => (image.content ? { ...image, content: await resolveImageUrl(image.storageKey, image.content) } : image)));
+            // Stored images need a fresh object URL every session. Images kept as a remote link have no
+            // storage key and resolve back to themselves, so a node mixing both still rebuilds correctly.
+            if (node.metadata?.storageKey || !content.startsWith("data:image/")) return { ...node, metadata: { ...node.metadata, content: await resolveImageUrl(node.metadata?.storageKey, content), images } };
             return { ...node, metadata: { ...node.metadata, ...imageMetadata(await uploadImage(content)) } };
         }),
     );
