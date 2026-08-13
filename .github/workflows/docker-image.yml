@@ -2,6 +2,9 @@ name: Docker image
 
 on:
   push:
+    # main 每次更新就出镜像。原先只在推 v* tag 时触发，而这个 fork 从来没有过
+    # 自己的 tag（本地那些是从上游 fetch 来的），所以这个流程一次都没跑过。
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -32,6 +35,9 @@ jobs:
           tags: |
             type=ref,event=tag
             type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+            # main 推送与 tag 推送都刷新 latest，宝塔直接拉 latest 即可；
+            # 回滚仍可指定具体的 sha 或 v*-best tag。
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
             type=sha,prefix=
 
   build:
