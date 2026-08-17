@@ -22,7 +22,7 @@ const sizeOptions = [
     { value: "auto", labelKey: "auto", width: 0, height: 0 },
 ];
 
-const secondOptions = [6, 10, 12, 16, 20];
+const secondOptions = [5, 10, 15, 20, 25, 30];  // API 支持 4-30 秒，提供常用选项
 const seedanceRatioLabelKeys: Record<string, string> = { "16:9": "landscape", "9:16": "portrait", "1:1": "square", "4:3": "standardLandscape", "3:4": "standardPortrait", "21:9": "cinematic", adaptive: "adaptive" };
 
 export const videoResolutionOptions = resolutionOptions.map((item) => ({ value: item.value, label: item.label }));
@@ -100,8 +100,15 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                 {value}s
                             </OptionPill>
                         ))}
-                        <NumberInput value={seconds} min={1} max={20} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />
                     </div>
+                    <NumberInput
+                        value={seconds}
+                        min={4}
+                        max={30}
+                        theme={theme}
+                        placeholder="4-30s"
+                        onChange={(value) => onConfigChange("videoSeconds", value)}
+                    />
                 </SettingGroup>
             </div>
         </ImageSettingsTheme>
@@ -155,7 +162,14 @@ function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, 
                             </OptionPill>
                         ))}
                     </div>
-                    <NumberInput value={String(duration)} min={-1} max={15} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />
+                    <NumberInput
+                        value={String(duration)}
+                        min={-1}
+                        max={30}
+                        placeholder="4-30s"
+                        theme={theme}
+                        onChange={(value) => onConfigChange("videoSeconds", value)}
+                    />
                 </SettingGroup>
                 <SettingGroup title={t("settingsPanels.video.output")} color={theme.node.muted}>
                     <div className="grid gap-2 rounded-xl border p-2.5" style={{ borderColor: theme.node.stroke }}>
@@ -239,8 +253,8 @@ function DimensionInput({ prefix, value, disabled, theme, onChange }: { prefix: 
     );
 }
 
-function NumberInput({ value, min, max, theme, onChange }: { value: string; min: number; max: number; theme: CanvasTheme; onChange: (value: string) => void }) {
-    return <input type="number" min={min} max={max} className="h-9 rounded-full border bg-transparent px-3 text-center text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" style={{ borderColor: theme.node.stroke, color: theme.node.text, WebkitTextFillColor: theme.node.text }} value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />;
+function NumberInput({ value, min, max, placeholder, theme, onChange }: { value: string; min: number; max: number; placeholder?: string; theme: CanvasTheme; onChange: (value: string) => void }) {
+    return <input type="number" min={min} max={max} placeholder={placeholder} className="h-9 rounded-full border bg-transparent px-3 text-center text-sm outline-none placeholder:opacity-40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" style={{ borderColor: theme.node.stroke, color: theme.node.text, WebkitTextFillColor: theme.node.text }} value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />;
 }
 
 function SizePreview({ width, height, color }: { width: number; height: number; color: string }) {

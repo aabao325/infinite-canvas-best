@@ -135,17 +135,27 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 }
 
 async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
-    const body = new FormData();
-    body.append("model", modelOptionName(model));
-    body.append("prompt", prompt);
-    body.append("seconds", normalizeVideoSeconds(config.videoSeconds));
-    if (normalizeVideoSize(config.size)) body.append("size", normalizeVideoSize(config.size)!);
-    body.append("resolution_name", normalizeVideoResolution(config.vquality));
-    body.append("preset", "normal");
-    const files = await Promise.all(references.slice(0, 7).map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    files.forEach((file) => body.append("input_reference[]", file));
+    // 将参考图片转换为 base64 data URL（API 文档要求：http(s) URL 或 data: base64，上限 30 张）
+    const imageUrls = await Promise.all(references.slice(0, 30).map(async (image) => await imageToDataUrl(image)));
+
+    const payload: Record<string, unknown> = {
+        model: modelOptionName(model),
+        prompt,
+        seconds: normalizeVideoSeconds(config.videoSeconds),
+        resolution: normalizeVideoResolution(config.vquality),
+    };
+
+    // size 参数可选
+    const size = normalizeVideoSize(config.size);
+    if (size) payload.size = size;
+
+    // 图片参考（JSON 数组或单个字符串）
+    if (imageUrls.length > 0) {
+        payload.input_reference = imageUrls.length === 1 ? imageUrls[0] : imageUrls;
+    }
+
     try {
-        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config), signal: options?.signal })).data);
+        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), payload, { headers: aiHeaders(config, "application/json"), signal: options?.signal })).data);
         if (!created.id) throw new Error(apiText("noVideoTaskId"));
         return { id: created.id, provider: "openai", model };
     } catch (error) {
