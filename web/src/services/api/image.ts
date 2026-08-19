@@ -352,6 +352,7 @@ function readApiErrorMessage(value: unknown): string {
 function readAxiosError(error: unknown, fallback: string) {
     if (axios.isCancel(error)) return apiText("requestCanceled");
     if (axios.isAxiosError(error)) {
+        if (!error.response && error.code === "ERR_NETWORK") return apiText("corsRequired");
         const responseData = error.response?.data;
         // Prefer the API error from the response body.
         const apiMsg = readApiErrorMessage(responseData);
@@ -905,6 +906,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         }
     }
 
+<<<<<<< HEAD
     if (requestConfig.apiFormat === "ark") {
         const seedream5 = isSeedream5Model(requestConfig.model);
         // Ark has no `mask` field. Seedream 5.x can hit a marked region from the prompt; older Ark models cannot.
@@ -946,6 +948,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         }
     }
 
+=======
+>>>>>>> upstream/main
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size, imageSizeLimits(requestConfig.model));
     const background = normalizeBackground(config.background);
