@@ -281,17 +281,21 @@ function supportsGeminiImageSize(model: string) {
     return value.includes("gemini-3") || value.includes("3.1") || value.includes("3-pro");
 }
 
-function resolveImageDataUrl(item: Record<string, unknown>) {
+async function resolveImageDataUrl(item: Record<string, unknown>) {
     if (typeof item.b64_json === "string" && item.b64_json) {
         return `data:image/png;base64,${item.b64_json}`;
     }
     if (typeof item.url === "string" && item.url) {
-        return item.url;
+        try {
+            return await imageToDataUrl({ dataUrl: item.url });
+        } catch {
+            return item.url;
+        }
     }
     return null;
 }
 
-function parseImagePayload(payload: ImageApiResponse) {
+async function parseImagePayload(payload: ImageApiResponse) {
     if (typeof payload.code === "number" && payload.code !== 0) {
         throw new Error(payload.msg || apiText("requestFailed"));
     }
@@ -301,8 +305,7 @@ function parseImagePayload(payload: ImageApiResponse) {
         || (payload as Record<string, unknown>).results as Array<Record<string, unknown>> | undefined
         || [];
     const images =
-        imageList
-            .map(resolveImageDataUrl)
+        (await Promise.all(imageList.map(resolveImageDataUrl)))
             .filter((value): value is string => Boolean(value))
             .map((dataUrl) => ({ id: nanoid(), dataUrl }));
 
@@ -352,6 +355,7 @@ function readApiErrorMessage(value: unknown): string {
 function readAxiosError(error: unknown, fallback: string) {
     if (axios.isCancel(error)) return apiText("requestCanceled");
     if (axios.isAxiosError(error)) {
+        if (!error.response && error.code === "ERR_NETWORK") return apiText("requestFailed");
         const responseData = error.response?.data;
         // Prefer the API error from the response body.
         const apiMsg = readApiErrorMessage(responseData);
@@ -805,8 +809,14 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 // Seedream 5.x has no quality/background knobs; sending them risks a 400.
                 ...(quality && !seedream5 ? { quality } : {}),
                 ...(requestSize ? { size: requestSize } : {}),
+<<<<<<< HEAD
                 ...(background && !seedream5 ? { background } : {}),
                 response_format: "b64_json",
+=======
+                ...(background ? { background } : {}),
+                // gpt-image models reject response_format; they always return b64.
+                ...(/gpt-image/.test(requestConfig.model) ? {} : { response_format: "b64_json" }),
+>>>>>>> upstream/main
                 output_format: IMAGE_OUTPUT_FORMAT,
             },
             {
@@ -814,7 +824,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 signal: options?.signal,
             },
         );
-        const images = parseImagePayload(response.data);
+        const images = await parseImagePayload(response.data);
         return images;
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -905,6 +915,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         }
     }
 
+<<<<<<< HEAD
     if (requestConfig.apiFormat === "ark") {
         const seedream5 = isSeedream5Model(requestConfig.model);
         // Ark has no `mask` field. Seedream 5.x can hit a marked region from the prompt; older Ark models cannot.
@@ -946,6 +957,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
         }
     }
 
+=======
+>>>>>>> upstream/main
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size, imageSizeLimits(requestConfig.model));
     const background = normalizeBackground(config.background);
@@ -953,7 +966,10 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     formData.set("model", requestConfig.model);
     formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
     formData.set("n", String(n));
-    formData.set("response_format", "b64_json");
+    // gpt-image models reject response_format; they always return b64.
+    if (!/gpt-image/.test(requestConfig.model)) {
+        formData.set("response_format", "b64_json");
+    }
     formData.set("output_format", IMAGE_OUTPUT_FORMAT);
     if (quality) {
         formData.set("quality", quality);
@@ -970,7 +986,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
 
     try {
         const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal });
-        const images = parseImagePayload(response.data);
+        const images = await parseImagePayload(response.data);
         return images;
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));

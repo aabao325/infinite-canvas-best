@@ -37,6 +37,13 @@ export type CanvasNodeImage = {
     mimeType: string;
 };
 
+export type CanvasNodeText = {
+    id: string;
+    status: CanvasNodeStatus;
+    errorDetails?: string;
+    content: string;
+};
+
 export type CanvasNodeMetadata = {
     content?: string;
     composerContent?: string;
@@ -52,6 +59,9 @@ export type CanvasNodeMetadata = {
     quality?: string;
     background?: string;
     count?: number;
+    textCount?: number;
+    texts?: CanvasNodeText[];
+    primaryTextId?: string;
     seconds?: string;
     vquality?: string;
     generateAudio?: string;
