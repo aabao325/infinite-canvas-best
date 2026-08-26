@@ -2,12 +2,15 @@ import localforage from "localforage";
 
 import { nanoid } from "nanoid";
 import i18n from "@/i18n";
+<<<<<<< HEAD
 import { readImageMeta, readRemoteImageMeta, urlImageMimeType } from "@/lib/image-utils";
 import { fetchImageBlob, isRemoteHttpUrl } from "@/services/remote-image";
+=======
+>>>>>>> upstream/main
 
 export type UploadedImage = {
     url: string;
-    storageKey: string;
+    storageKey?: string;
     width: number;
     height: number;
     bytes: number;
@@ -20,7 +23,13 @@ const store = localforage.createInstance({ name: "infinite-canvas", storeName: "
 const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
 const videoLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
 const objectUrls = new Map<string, string>();
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+const IMAGE_REMOTE_LOAD_TIMEOUT_MS = 10 * 60_000;
+const IMAGE_DECODE_TIMEOUT_MS = 10_000;
+const IMAGE_RESPONSE_ERROR = "ImageResponseError";
+const IMAGE_TIMEOUT_ERROR = "ImageTimeoutError";
 
+<<<<<<< HEAD
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
     if (typeof input === "string" && isRemoteHttpUrl(input)) {
         try {
@@ -36,9 +45,29 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
 }
 
 async function storeImageBlob(blob: Blob): Promise<UploadedImage> {
+=======
+type ImageReadOptions = { signal?: AbortSignal };
+
+export async function uploadImage(input: string | Blob, options?: ImageReadOptions): Promise<UploadedImage> {
+    if (typeof input !== "string") return storeImage(input, options);
+
+    let blob: Blob;
+    try {
+        blob = await fetchImageBlob(input, options);
+    } catch (error) {
+        if (options?.signal?.aborted || isNamedError(error, IMAGE_RESPONSE_ERROR) || isNamedError(error, IMAGE_TIMEOUT_ERROR) || !/^https?:\/\//i.test(input)) throw error;
+        const meta = await loadImageMeta(input, options, IMAGE_REMOTE_LOAD_TIMEOUT_MS);
+        if (!meta) throw error;
+        return { url: input, width: meta.width, height: meta.height, bytes: 0, mimeType: "" };
+    }
+    return storeImage(blob, options);
+}
+
+async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<UploadedImage> {
+>>>>>>> upstream/main
     const storageKey = `image:${nanoid()}`;
-    await store.setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
+<<<<<<< HEAD
     objectUrls.set(storageKey, url);
     const meta = await readImageMeta(url);
     return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType, persisted: true };
@@ -48,6 +77,93 @@ async function storeImageBlob(blob: Blob): Promise<UploadedImage> {
 async function linkOnlyImage(url: string): Promise<UploadedImage> {
     const meta = await readRemoteImageMeta(url);
     return { url, storageKey: "", width: meta.width, height: meta.height, bytes: 0, mimeType: urlImageMimeType(url), persisted: false };
+=======
+    try {
+        const meta = await loadImageMeta(url, options);
+        if (!meta) throw new Error(i18n.t("common.imageReadFailed"));
+        throwIfAborted(options?.signal);
+        await store.setItem(storageKey, blob);
+        throwIfAborted(options?.signal);
+        objectUrls.set(storageKey, url);
+        return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type.startsWith("image/") ? blob.type : "" };
+    } catch (error) {
+        URL.revokeObjectURL(url);
+        await store.removeItem(storageKey).catch(() => undefined);
+        throw error;
+    }
+}
+
+async function fetchImageBlob(url: string, options?: ImageReadOptions) {
+    const controller = new AbortController();
+    let timedOut = false;
+    const abort = () => controller.abort();
+    if (options?.signal?.aborted) abort();
+    else options?.signal?.addEventListener("abort", abort, { once: true });
+    const timer = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, IMAGE_DOWNLOAD_TIMEOUT_MS);
+    try {
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) throw namedError(IMAGE_RESPONSE_ERROR);
+        return await response.blob();
+    } catch (error) {
+        if (timedOut) throw namedError(IMAGE_TIMEOUT_ERROR);
+        if (options?.signal?.aborted) throw abortReason(options.signal);
+        throw error;
+    } finally {
+        window.clearTimeout(timer);
+        options?.signal?.removeEventListener("abort", abort);
+    }
+}
+
+function loadImageMeta(url: string, options?: ImageReadOptions, timeoutMs = IMAGE_DECODE_TIMEOUT_MS) {
+    return new Promise<{ width: number; height: number } | null>((resolve, reject) => {
+        if (options?.signal?.aborted) return reject(abortReason(options.signal));
+        const image = new Image();
+        let settled = false;
+        const finish = (value: { width: number; height: number } | null) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            options?.signal?.removeEventListener("abort", abort);
+            image.onload = null;
+            image.onerror = null;
+            resolve(value);
+        };
+        const abort = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            image.onload = null;
+            image.onerror = null;
+            reject(abortReason(options!.signal!));
+        };
+        const timer = window.setTimeout(() => finish(null), timeoutMs);
+        options?.signal?.addEventListener("abort", abort, { once: true });
+        image.onload = () => finish(image.naturalWidth && image.naturalHeight ? { width: image.naturalWidth, height: image.naturalHeight } : null);
+        image.onerror = () => finish(null);
+        image.src = url;
+    });
+}
+
+function namedError(name: string) {
+    const error = new Error(i18n.t("common.imageReadFailed"));
+    error.name = name;
+    return error;
+}
+
+function isNamedError(error: unknown, name: string) {
+    return error instanceof Error && error.name === name;
+}
+
+function abortReason(signal: AbortSignal) {
+    return signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError");
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+    if (signal?.aborted) throw abortReason(signal);
+>>>>>>> upstream/main
 }
 
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
@@ -72,9 +188,10 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
     return url;
 }
 
-export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
+export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }, options?: ImageReadOptions) {
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
     if (!url || url.startsWith("data:")) return url;
+<<<<<<< HEAD
     try {
         return await blobToDataUrl(await fetchImageBlob(url));
     } catch (error) {
@@ -83,6 +200,9 @@ export async function imageToDataUrl(image: { url?: string; dataUrl?: string; st
         if (isRemoteHttpUrl(url)) return url;
         throw error;
     }
+=======
+    return blobToDataUrl(await fetchImageBlob(url, options));
+>>>>>>> upstream/main
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {
