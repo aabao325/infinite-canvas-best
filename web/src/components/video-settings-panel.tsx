@@ -1,10 +1,8 @@
 import { type ReactNode } from "react";
-import { Switch } from "antd";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
-import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { type AiConfig } from "@/stores/use-config-store";
 
@@ -22,8 +20,12 @@ const sizeOptions = [
     { value: "auto", labelKey: "auto", width: 0, height: 0 },
 ];
 
+<<<<<<< HEAD
 const secondOptions = [5, 10, 15, 20, 25, 30];  // API 支持 4-30 秒，提供常用选项
 const seedanceRatioLabelKeys: Record<string, string> = { "16:9": "landscape", "9:16": "portrait", "1:1": "square", "4:3": "standardLandscape", "3:4": "standardPortrait", "21:9": "cinematic", adaptive: "adaptive" };
+=======
+const secondOptions = [6, 10, 12, 16, 20];
+>>>>>>> upstream/main
 
 export const videoResolutionOptions = resolutionOptions.map((item) => ({ value: item.value, label: item.label }));
 export const videoSizeOptions = sizeOptions.map((item) => ({ value: item.value, get label() { return i18n.t(`settingsPanels.video.sizes.${item.labelKey}`); } }));
@@ -39,10 +41,6 @@ type VideoSettingsPanelProps = {
 
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: VideoSettingsPanelProps) {
     const { t } = useTranslation();
-    if (isSeedanceVideoConfig(config)) {
-        return <SeedanceVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
-    }
-
     const seconds = config.videoSeconds || "6";
     const size = normalizeVideoSizeValue(config.size);
     const dimensions = readSizeDimensions(size);
@@ -115,6 +113,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     );
 }
 
+<<<<<<< HEAD
 function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps) {
     const { t } = useTranslation();
     const resolution = normalizeSeedanceResolution(config.vquality);
@@ -182,14 +181,14 @@ function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, 
     );
 }
 
+=======
+>>>>>>> upstream/main
 export function videoResolutionLabel(value: string) {
     return `${normalizeVideoResolutionValue(value)}p`;
 }
 
 export function videoSizeLabel(value: string) {
-    const ratio = normalizeSeedanceRatio(value);
     if (value === "adaptive" || value === "auto") return i18n.t("settingsPanels.video.adaptive");
-    if (ratio === value) return i18n.t(`settingsPanels.video.ratios.${seedanceRatioLabelKeys[ratio]}`);
     const size = normalizeVideoSizeValue(value);
     const option = sizeOptions.find((item) => item.value === size);
     return option ? i18n.t(`settingsPanels.video.sizes.${option.labelKey}`) : size;
@@ -263,29 +262,6 @@ function SizePreview({ width, height, color }: { width: number; height: number; 
     const previewWidth = Math.max(10, Math.round((width / longSide) * 26));
     const previewHeight = Math.max(10, Math.round((height / longSide) * 26));
     return <span className="rounded-[3px] border-2" style={{ width: previewWidth, height: previewHeight, borderColor: color }} />;
-}
-
-function ratioPreview(ratio: string) {
-    if (ratio === "9:16") return { width: 9, height: 16 };
-    if (ratio === "1:1") return { width: 1, height: 1 };
-    if (ratio === "4:3") return { width: 4, height: 3 };
-    if (ratio === "3:4") return { width: 3, height: 4 };
-    if (ratio === "21:9") return { width: 21, height: 9 };
-    if (ratio === "adaptive") return { width: 0, height: 0 };
-    return { width: 16, height: 9 };
-}
-
-function SwitchRow({ label, checked, theme, onChange }: { label: string; checked: boolean; theme: CanvasTheme; onChange: (checked: boolean) => void }) {
-    return (
-        <div className="flex h-8 items-center justify-between gap-3">
-            <span className="text-sm" style={{ color: theme.node.text }}>
-                {label}
-            </span>
-            <span onMouseDown={(event) => event.stopPropagation()}>
-                <Switch size="small" checked={checked} onChange={onChange} />
-            </span>
-        </div>
-    );
 }
 
 function readSizeDimensions(size: string) {
